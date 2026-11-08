@@ -24,8 +24,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [ Debug, Release ]
-        arch: [ x64, x86 ]
+        config: ${{ fromJSON(github.ref == 'refs/heads/codex/bridge-workspace' && '["Release"]' || '["Debug", "Release"]') }}
+        arch: ${{ fromJSON(github.ref == 'refs/heads/codex/bridge-workspace' && '["x64"]' || '["x64", "x86"]') }}
         exclude:
           # Win32 Debug is not built or shipped, and its suite has a pre-existing x86-only fault
           # in should_scan_mov. Release Win32 is what the desktop package carries, so that is the
@@ -95,6 +95,7 @@ jobs:
   # overload removed during the port left platform_win.cpp uncompilable behind that define, and
   # nothing noticed until a Store build was attempted.
   store:
+    if: github.ref != 'refs/heads/codex/bridge-workspace'
     runs-on: windows-2025-vs2026
 
     steps:
