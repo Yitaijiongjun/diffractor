@@ -44,6 +44,24 @@ jobs:
       if: matrix.config == 'Release' && matrix.arch == 'x64'
       run: pwsh -NoProfile -File tools/lint_repo.ps1
 
+    # Keep Ninja's fetched, pinned sources and compiled libraries together. The runner image
+    # identifies the compiler, SDK and build tools, while the CMake inputs identify the recipes
+    # and dependency revisions. A changed application source is still rebuilt by Ninja.
+    - name: Identify build environment
+      if: github.ref == 'refs/heads/codex/bridge-workspace'
+      id: build_environment
+      run: |
+        if (-not $env:ImageVersion) { throw 'The runner image version is required for a safe build cache.' }
+        "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+
+    - name: Cache compiled dependencies
+      if: github.ref == 'refs/heads/codex/bridge-workspace'
+      id: build_cache
+      uses: actions/cache@v4
+      with:
+        path: tmp/win-build-${{ matrix.arch }}
+        key: windows-build-v1-${{ steps.build_environment.outputs.image }}-${{ matrix.arch }}-${{ matrix.config }}-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tools/dd.py') }}
+
     - name: Build
       run: python tools/dd.py build --config ${{ matrix.config }} --arch ${{ matrix.arch }}
 

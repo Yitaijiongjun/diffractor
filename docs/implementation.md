@@ -299,6 +299,11 @@ repository lint, build, release tooling checks, and embedded tests. Focused test
 `.\exe\diffractor64-d.exe /test:*name*`. [Testing](testing.md) owns test placement and constraints;
 [Linux](linux.md#retiring-msbuild) owns the cross-platform build boundary.
 
+The Windows workspace-branch workflow caches the Ninja build tree, including fetched sources and
+compiled dependencies. Its key includes the runner image, architecture, configuration, CMake recipes,
+dependency pins and build driver. Changes to those inputs start a fresh cache. Ninja rebuilds application
+sources changed since the cached build and links the executable again.
+
 ## Where this lives
 
 - [app.cpp](../src/app.cpp), [app.h](../src/app.h), and [app_workers.cpp](../src/app_workers.cpp):
