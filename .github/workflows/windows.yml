@@ -54,16 +54,40 @@ jobs:
         if (-not $env:ImageVersion) { throw 'The runner image version is required for a safe build cache.' }
         "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
 
+    - name: Test cached input timestamps
+      if: github.ref == 'refs/heads/codex/bridge-workspace'
+      run: python -m unittest discover -s tools -p test_windows_cache_mtime.py
+
     - name: Cache compiled dependencies
       if: github.ref == 'refs/heads/codex/bridge-workspace'
       id: build_cache
       uses: actions/cache@v4
       with:
+        path: |
+          tmp/win-build-${{ matrix.arch }}
+          exe/diffractor64.exe
+          exe/diffractor64.pdb
+          exe/diffractor64.ilk
+        key: windows-build-v2-${{ steps.build_environment.outputs.image }}-${{ matrix.arch }}-${{ matrix.config }}-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tools/dd.py', 'tools/windows_cache_mtime.py') }}
+
+    # Seed a new-format cache from the existing dependency-only cache when available.
+    - name: Restore previous compiled dependencies
+      if: github.ref == 'refs/heads/codex/bridge-workspace' && steps.build_cache.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@v4
+      with:
         path: tmp/win-build-${{ matrix.arch }}
         key: windows-build-v1-${{ steps.build_environment.outputs.image }}-${{ matrix.arch }}-${{ matrix.config }}-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tools/dd.py') }}
 
+    - name: Restore timestamps for unchanged inputs
+      if: github.ref == 'refs/heads/codex/bridge-workspace' && steps.build_cache.outputs.cache-hit == 'true'
+      run: python tools/windows_cache_mtime.py restore tmp/win-build-${{ matrix.arch }}
+
     - name: Build
       run: python tools/dd.py build --config ${{ matrix.config }} --arch ${{ matrix.arch }}
+
+    - name: Record build input timestamps
+      if: github.ref == 'refs/heads/codex/bridge-workspace' && steps.build_cache.outputs.cache-hit != 'true'
+      run: python tools/windows_cache_mtime.py save tmp/win-build-${{ matrix.arch }}
 
     # The binary name carries the architecture and the configuration, because dd.ps1, the NSIS
     # script and the MSIX staging all name it rather than asking the build.
