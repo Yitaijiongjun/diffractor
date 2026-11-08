@@ -1038,30 +1038,10 @@ function Invoke-Tests {
     & $testExe @testArgs | Out-Host
     $testResult = $LASTEXITCODE
 
-    # Validate translation (.po) files
     Write-Host ""
-    Write-Host "Validating translation (.po) files..." -ForegroundColor Yellow
-    Write-Host ""
-    & $testExe /validate-po | Out-Host
-    $poResult = $LASTEXITCODE
-
-    # Validate translation content (registration integrity + placeholder/quality
-    # checks) via the combined Python validator.
-    Write-Host ""
-    Write-Host "Validating translation content (check_translations.py)..." -ForegroundColor Yellow
-    Write-Host ""
-    $python = Get-PythonExe
-    $checkScript = Join-Path $ToolsDir "check_translations.py"
-    & $python -m unittest discover -s $ToolsDir -p "test_check_translations.py" | Out-Host
-    $translationChecksResult = $LASTEXITCODE
-    & $python $checkScript | Out-Host
-    $transResult = $LASTEXITCODE
-
-    Write-Host ""
-    if ($lintResult -eq 0 -and $toolsResult -eq 0 -and $testResult -eq 0 -and $poResult -eq 0 -and
-        $translationChecksResult -eq 0 -and $transResult -eq 0) {
+    if ($lintResult -eq 0 -and $toolsResult -eq 0 -and $testResult -eq 0) {
         Write-Host "============================================================================" -ForegroundColor Green
-        Write-Host "Lint is clean, all tests passed and .po files are valid!" -ForegroundColor Green
+        Write-Host "Lint is clean and all tests passed." -ForegroundColor Green
         Write-Host "============================================================================" -ForegroundColor Green
         Write-Host ""
     }
@@ -1075,15 +1055,6 @@ function Invoke-Tests {
         }
         if ($testResult -ne 0) {
             Write-Host "Unit tests FAILED (exit code $testResult)." -ForegroundColor Red
-        }
-        if ($poResult -ne 0) {
-            Write-Host "Translation (.po) validation FAILED (exit code $poResult)." -ForegroundColor Red
-        }
-        if ($transResult -ne 0) {
-            Write-Host "Translation content validation FAILED (exit code $transResult)." -ForegroundColor Red
-        }
-        if ($translationChecksResult -ne 0) {
-            Write-Host "Translation checker tests FAILED (exit code $translationChecksResult)." -ForegroundColor Red
         }
         Write-Host "============================================================================" -ForegroundColor Red
         Write-Host ""

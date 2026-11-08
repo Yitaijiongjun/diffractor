@@ -54,5 +54,5 @@ models the hop with a `deferred_async_strategy`; running it inline trips the ass
 
 ## Checks
 
-`.\dd.ps1 test` runs the lint, the suite, and the translation checks. Narrow first with
+`.\dd.ps1 test` runs the lint, the release tooling checks, and the suite. Narrow first with
 `.\exe\diffractor64-d.exe /test:*subject* | Out-Host`.

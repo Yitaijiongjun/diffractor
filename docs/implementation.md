@@ -295,7 +295,7 @@ report contents and symbolization are owned by [crash.md](crash.md).
 ## Build And Validation
 
 CMake is the only build description and `dd` is the repository gateway. Run `.\dd.ps1 test` for
-repository lint, build, embedded tests, and translation validation. Focused tests use
+repository lint, build, release tooling checks, and embedded tests. Focused tests use
 `.\exe\diffractor64-d.exe /test:*name*`. [Testing](testing.md) owns test placement and constraints;
 [Linux](linux.md#retiring-msbuild) owns the cross-platform build boundary.
 

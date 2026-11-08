@@ -21,8 +21,9 @@ SDK-only SymStore discovery, missing prerequisites, argument forwarding and
 nonzero exit handling. It uses temporary fixtures and never writes to a real
 symbol store.
 
-Translation registration checks include `app_text`'s composed libdesktop
-messages. [test_check_translations.py](../tools/test_check_translations.py)
+For manual catalog maintenance, `/validate-po` checks the catalogs and
+`check_translations.py` checks translation content, including `app_text`'s composed
+libdesktop messages. [test_check_translations.py](../tools/test_check_translations.py)
 proves that omitted, duplicated, unknown and wrongly typed shared messages
 still fail. For an explicitly overridden libdesktop source, pass its
 `include/libdesktop/platform.h` to `check_translations.py --platform-text-header`.
