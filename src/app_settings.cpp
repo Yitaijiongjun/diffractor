@@ -68,7 +68,10 @@ static constexpr auto s_subject = "subject";
 static constexpr auto s_message = "message";
 static constexpr auto s_items_scale = "items_scale";
 static constexpr auto s_items_scale_position = "items_scale_position";
-static constexpr auto s_item_splitter = "item_splitter";
+static constexpr auto s_workspace_order = "workspace_order";
+static constexpr auto s_workspace_left = "workspace_left";
+static constexpr auto s_workspace_right = "workspace_right";
+static constexpr auto s_workspace_two_pane_left = "workspace_two_pane_left";
 static constexpr auto s_view_splitters = "view_splitters";
 static constexpr auto s_auto_play = "auto_play";
 static constexpr auto s_auto_advance = "auto_advance";
@@ -425,7 +428,6 @@ settings_t::settings_t()
 	jxl_quality = 90;
 	jxl_lossless = false;
 	slideshow_delay = 3;
-	item_splitter_pos = item_splitter_max / 2;
 
 	write_folder = known_path(platform::known_folder::pictures).text();
 
@@ -544,7 +546,7 @@ void settings_t::reset_presentation()
 	zoom_navigator = defaults.zoom_navigator;
 	item_scale = defaults.item_scale;
 	item_scale_position = defaults.item_scale_position;
-	item_splitter_pos = defaults.item_splitter_pos;
+	workspace = defaults.workspace;
 	view_splitter_positions = defaults.view_splitter_positions;
 	detail_items = defaults.detail_items;
 
@@ -862,7 +864,10 @@ void settings_t::read()
 	store.read({}, s_items_scale_position, item_scale_position);
 	if (item_scale_position < 0) item_scale_position = item_scale_snap_position(item_scale);
 	set_item_scale_position(item_scale_position);
-	store.read({}, s_item_splitter, item_splitter_pos);
+	store.read({}, s_workspace_order, workspace.order);
+	store.read({}, s_workspace_left, workspace.left);
+	store.read({}, s_workspace_right, workspace.right);
+	store.read({}, s_workspace_two_pane_left, workspace.two_pane_left);
 
 	for (auto i = 0; i < view_splitter_count; ++i)
 	{
@@ -1064,7 +1069,10 @@ void settings_t::write() const
 	store.write({}, s_slideshow_delay, slideshow_delay);
 	store.write({}, s_items_scale, item_scale);
 	store.write({}, s_items_scale_position, item_scale_position);
-	store.write({}, s_item_splitter, item_splitter_pos);
+	store.write({}, s_workspace_order, workspace.order);
+	store.write({}, s_workspace_left, workspace.left);
+	store.write({}, s_workspace_right, workspace.right);
+	store.write({}, s_workspace_two_pane_left, workspace.two_pane_left);
 
 	for (auto i = 0; i < view_splitter_count; ++i)
 	{

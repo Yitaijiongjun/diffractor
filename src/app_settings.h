@@ -202,7 +202,16 @@ public:
 	void reset_presentation();
 
 	// Constants
-	static constexpr int item_splitter_max = 10000;
+	struct workspace_layout
+	{
+		static constexpr int scale = 10000;
+		int order = 0;
+		int left = 1800;
+		int right = 2800;
+		int two_pane_left = 6500;
+
+		bool operator==(const workspace_layout&) const = default;
+	};
 	static constexpr int item_scale_count = 8;
 	static constexpr int item_scale_position_max = 100;
 	static int item_scale_snaps[item_scale_count];
@@ -233,7 +242,7 @@ public:
 	int slideshow_delay = 0;
 	int item_scale = 5;
 	int item_scale_position = -1;
-	int item_splitter_pos = 5;
+	workspace_layout workspace;
 	int min_show_update_day = 0;
 
 	int jpeg_save_quality = 0;

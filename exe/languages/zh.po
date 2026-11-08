@@ -3931,3 +3931,21 @@ msgid "1 of the items shown"
 msgid_plural "{count} of the items shown"
 msgstr[0] "显示的项目中有 1 项"
 msgstr[1] "显示的项目中有 {count} 项"
+
+msgid "Folder tree"
+msgstr "文件夹"
+
+msgid "Contents"
+msgstr "内容"
+
+msgid "Drag to move this pane"
+msgstr "拖动以移动面板"
+
+msgid "No grouping"
+msgstr "不分组"
+
+msgid "Play selected media"
+msgstr "播放选中的媒体"
+
+msgid "Reset pane layout"
+msgstr "重置面板布局"

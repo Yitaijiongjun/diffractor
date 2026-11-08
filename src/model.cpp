@@ -800,6 +800,7 @@ void view_state::view_mode(const view_type m)
 {
 	if (_view_mode != m)
 	{
+		if (m != view_type::items && m != view_type::media && !_selection_slides.empty()) stop();
 		_view_mode = m;
 		record_feature_use(features::view_bit(m));
 		_events.view_changed(_view_mode);
@@ -848,6 +849,21 @@ void view_state::toggle_slideshow(const view_host_base_ptr& view)
 	if (!can_slideshow())
 		return;
 
+	if (_selected.size() > 1)
+	{
+		// The selection is already in display order. Keep its target and focus while the preview
+		// borrows each playable item in turn.
+		for (const auto& item : _selected.items())
+			if (item->is_media()) _selection_slides.emplace_back(item);
+		if (_selection_slides.empty()) return;
+
+		record_feature_use(features::slideshow);
+		_selection_slide = 0;
+		_common_display_state._is_slideshow = true;
+		load_display_state();
+		return;
+	}
+
 	const auto displayed = d->is_one() ? d->_item1 : nullptr;
 	const auto start = displayed && displayed->is_media() ? displayed : next_media_item(true, true);
 
@@ -889,8 +905,12 @@ void view_state::stop()
 	}
 
 	_common_display_state._is_slideshow = false;
-
-	invalidate_view(view_invalid::command_state | view_invalid::screen_saver);
+	if (!_selection_slides.empty())
+	{
+		_selection_slides.clear();
+		load_display_state();
+	}
+	invalidate_view(view_invalid::command_state | view_invalid::screen_saver | view_invalid::view_redraw);
 }
 
 bool display_state_t::publish_av_session(const std::shared_ptr<av_session>& ses, const uint32_t generation)
@@ -1213,7 +1233,12 @@ bool view_state::update_selection()
 
 	if (changed)
 	{
-		_selected = selected;
+		_selected = std::move(selected);
+		if (!_selection_slides.empty())
+		{
+			_selection_slides.clear();
+			_common_display_state._is_slideshow = false;
+		}
 		load_display_state();
 	}
 
@@ -2480,6 +2505,15 @@ view_elements_ptr view_state::create_selection_controls(const bool compact)
 					elements.emplace_back(transport);
 				}
 
+				if (!_selection_slides.empty())
+				{
+					result->add(elements);
+					result->add(std::make_shared<text_element>(
+						std::format("{}/{}  {}", _selection_slide + 1, _selection_slides.size(), item->name()),
+						ui::style::font_face::dialog, ui::style::text_style::multiline, flex_item::new_line));
+					return result;
+				}
+
 				const auto name = item->path().file_name_without_extension();
 				const auto title_text = md && !is_empty(md->title) ? md->title.sv() : name;
 				flex_item_layout title_layout;
@@ -3138,7 +3172,7 @@ df::item_element_ptr view_state::command_item() const
 {
 	const auto d = _display;
 
-	if (d && d->is_one())
+	if (d && d->is_one() && _selection_slides.empty())
 	{
 		return d->_item1;
 	}
@@ -3228,8 +3262,13 @@ bool view_state::should_show_overlays() const
 	return ui::ticks_since_last_user_action < ui::default_ticks_per_second * 5 || df::command_active;
 }
 
-void view_state::stop_slideshow() const
+void view_state::stop_slideshow()
 {
+	if (!_selection_slides.empty())
+	{
+		stop();
+		return;
+	}
 	const auto d = _display;
 
 	if (d)
@@ -3245,6 +3284,8 @@ void view_state::reset()
 	_search_items.clear();
 	_display_items.clear();
 	_selected.clear();
+	_selection_slides.clear();
+	_common_display_state._is_slideshow = false;
 	_focus.reset();
 	_item_groups.clear();
 	_edit_item.reset();
@@ -3312,7 +3353,7 @@ bool view_state::escape(const view_host_base_ptr& view)
 
 	if (d)
 	{
-		if (d->is_playing_slideshow())
+		if (d->is_slideshow())
 		{
 			stop_slideshow();
 			return true;
@@ -3469,6 +3510,22 @@ df::search_parent find_parent_search(const df::search_t& search)
 	return result;
 }
 
+
+void view_state::open_folder_from_tree(const view_host_base_ptr& view, const df::folder_path folder,
+                                       const bool available)
+{
+	const auto search = df::search_t().add_selector(df::item_selector(folder));
+	if (!available)
+	{
+		_events.report_scope_unavailable(search);
+		return;
+	}
+	if (!_events.can_open_search(search)) return;
+
+	recent_searches.add(folder.text());
+	_pending_history_move.reset();
+	open_validated(view, search, {});
+}
 
 void view_state::open(const view_host_base_ptr& view, const std::string_view text)
 {
@@ -3727,6 +3784,12 @@ df::item_element_ptr view_state::next_media_item(const bool forward, const bool 
 
 bool view_state::can_slideshow() const
 {
+	if (_display && _display->is_slideshow()) return true;
+	if (_selected.size() > 1)
+	{
+		return std::ranges::any_of(_selected.items(), [](const auto& item) { return item->is_media(); });
+	}
+
 	const auto displayed = _display && _display->is_one() ? _display->_item1 : nullptr;
 	if (displayed && displayed->is_media()) return true;
 
@@ -4005,7 +4068,8 @@ static texture_state_ptr get_tex(const existing_textures_t& existing_textures, c
 void view_state::load_display_state()
 {
 	const auto new_display = std::make_shared<display_state_t>(_async, _common_display_state);
-	new_display->populate(*this);
+	const auto slide = _selection_slides.empty() ? nullptr : _selection_slides[_selection_slide];
+	new_display->populate(*this, slide);
 
 	const auto d = _display;
 
@@ -4201,6 +4265,13 @@ void view_state::close() const
 
 void view_state::tick(const view_host_base_ptr& view, const double time_now)
 {
+	const auto selection_slideshow = !_selection_slides.empty();
+	if (selection_slideshow && !_common_display_state._is_slideshow && _file_handle_detach_count == 0)
+	{
+		// Some transport gestures stop the shared slideshow flag from the display itself.
+		stop();
+		return;
+	}
 	const auto d = _display;
 
 	if (d)
@@ -4254,6 +4325,13 @@ void view_state::tick(const view_host_base_ptr& view, const double time_now)
 					}
 				}
 
+				if (selection_slideshow && d->_av_open_failed)
+				{
+					if (++_selection_slide < _selection_slides.size()) load_display_state();
+					else stop();
+					return;
+				}
+
 				if (is_media_end || is_photo_end)
 				{
 					const auto mode_can_play = view_mode() == view_type::items || view_mode() == view_type::media;
@@ -4273,14 +4351,22 @@ void view_state::tick(const view_host_base_ptr& view, const double time_now)
 					if (t.can_next && t.repeat != repeat_mode::repeat_one && (is_slideshow || setting.auto_advance))
 					{
 						// An episode continues with the next in its show; anything else with the next on display.
-						next = is_media_end ? next_episode(display_item) : nullptr;
-						if (!next) next = next_media_item(true, false);
+						if (selection_slideshow)
+						{
+							if (_selection_slide + 1 < _selection_slides.size())
+								next = _selection_slides[_selection_slide + 1];
+						}
+						else
+						{
+							next = is_media_end ? next_episode(display_item) : nullptr;
+							if (!next) next = next_media_item(true, false);
+						}
 						t.has_next = next != nullptr;
 						t.next_is_current = next == display_item;
 
 						if (!next && t.repeat == repeat_mode::repeat_all)
 						{
-							next = next_media_item(true, true);
+							next = selection_slideshow ? _selection_slides.front() : next_media_item(true, true);
 							t.has_wrapped_next = next != nullptr;
 							t.wrapped_is_current = next == display_item;
 						}
@@ -4300,7 +4386,15 @@ void view_state::tick(const view_host_base_ptr& view, const double time_now)
 
 					case playback_advance::advance:
 						_play_next_on_open = true;
-						select(view, next, false, false, true);
+						if (selection_slideshow)
+						{
+							_selection_slide = (_selection_slide + 1) % _selection_slides.size();
+							load_display_state();
+						}
+						else
+						{
+							select(view, next, false, false, true);
+						}
 						break;
 
 					case playback_advance::stop:
@@ -5174,7 +5268,7 @@ ui::texture_ptr texture_state::zoom_texture(ui::draw_context& rc, const sizei ex
 	return _zoom_texture;
 }
 
-void display_state_t::populate(const view_state& state)
+void display_state_t::populate(const view_state& state, const df::item_element_ptr& slide)
 {
 	existing_textures_t existing_textures;
 
@@ -5191,14 +5285,14 @@ void display_state_t::populate(const view_state& state)
 	const auto item_count = selected_items.items().size();
 	const auto no_folders = !selected_items.has_folders();
 
-	_is_one = item_count == 1 && no_folders;
-	_is_two = item_count == 2 && no_folders;
-	_is_multi = item_count >= 3 && no_folders;
+	_is_one = slide || (item_count == 1 && no_folders);
+	_is_two = !slide && item_count == 2 && no_folders;
+	_is_multi = !slide && item_count >= 3 && no_folders;
 	_can_zoom = false;
 
 	if (_is_one)
 	{
-		_item1 = selected_items.items()[0];
+		_item1 = slide ? slide : selected_items.items()[0];
 		_selected_texture1 = get_tex(existing_textures, _item1, _async);
 		_can_zoom = _item1->file_type()->has_trait(file_traits::zoom);
 		if (_item1->file_type()->has_trait(file_traits::bitmap) && !_selected_texture1->_photo_loaded)

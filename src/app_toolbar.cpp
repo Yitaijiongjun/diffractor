@@ -92,11 +92,11 @@ void app_frame::create_toolbars()
 	};
 
 	ui::toolbar_styles tb_styles;
-	tb_styles.button_extent = {30, 40};
+	tb_styles.button_extent = {28, 32};
 	_navigate1 = _app_frame->create_toolbar(tb_styles, tbButtonsNav1);
 	_navigate2 = _app_frame->create_toolbar(tb_styles, tbButtonsNav2);
 
-	tb_styles.button_extent = {40, 40};
+	tb_styles.button_extent = {36, 32};
 	_navigate3 = _app_frame->create_toolbar(tb_styles, tbButtonsNav3);
 
 	ui::edit_styles search_styles;
@@ -463,6 +463,8 @@ std::string format_items_summary(const group_by grouping, const sort_by order,
 	{
 	case group_by::presence: group_text = tt.sort_by_presence;
 		break;
+	case group_by::ungrouped: group_text = tt.command_group_ungrouped;
+		break;
 	case group_by::file_type: group_text = tt.sort_by_file_type;
 		break;
 	case group_by::shuffle: group_text = tt.sort_by_shuffle;
@@ -775,6 +777,7 @@ void app_frame::update_button_state(const bool resize)
 	_commands[commands::group_created]->enable = can_group;
 	_commands[commands::group_original]->enable = can_group;
 	_commands[commands::group_extension]->enable = can_group;
+	_commands[commands::group_ungrouped]->enable = can_group;
 	_commands[commands::group_file_type]->enable = can_group;
 	_commands[commands::group_folder]->enable = can_group;
 	_commands[commands::group_location]->enable = can_group;
@@ -1106,6 +1109,7 @@ void app_frame::update_button_state(const bool resize)
 	_commands[commands::group_created]->checked = _state.group_order() == group_by::date_created;
 	_commands[commands::group_original]->checked = _state.group_order() == group_by::date_original;
 	_commands[commands::group_presence]->checked = _state.group_order() == group_by::presence;
+	_commands[commands::group_ungrouped]->checked = _state.group_order() == group_by::ungrouped;
 	_commands[commands::group_file_type]->checked = _state.group_order() == group_by::file_type;
 	_commands[commands::group_location]->checked = _state.group_order() == group_by::location;
 	_commands[commands::group_modified]->checked = _state.group_order() == group_by::date_modified;
@@ -1552,6 +1556,7 @@ void app_frame::update_command_text()
 	def_command(commands::group_camera, command_group::group_by, icon_index::none, tt.command_group_camera);
 	def_command(commands::group_created, command_group::group_by, icon_index::none, tt.command_group_created);
 	def_command(commands::group_original, command_group::group_by, icon_index::none, tt.command_group_original);
+	def_command(commands::group_ungrouped, command_group::group_by, icon_index::none, tt.command_group_ungrouped);
 	def_command(commands::group_file_type, command_group::group_by, icon_index::none, tt.command_group_file_type);
 	def_command(commands::group_location, command_group::group_by, icon_index::none, tt.command_group_location);
 	def_command(commands::group_modified, command_group::group_by, icon_index::none, tt.command_group_modified);

@@ -8,7 +8,7 @@
 
 // Purpose: Items grid/list view. Displays thumbnails in grid layout, handles
 // selection, keyboard navigation, context menus, and item interactions. Also
-// builds the selection detail pane, including the verbose metadata block tree.
+// builds the selection detail pane and arranges the docked folder, contents and preview panes.
 
 #include "pch.h"
 #include "model.h"
@@ -21,6 +21,311 @@
 #include "ui_sid.h"
 #include "view_items.h"
 #include "app_sidebar.h"
+
+namespace
+{
+	void draw_workspace_icon(ui::draw_context& dc, const icon_index icon, const recti bounds, const ui::color color)
+	{
+		dc.draw_text(icon_to_utf8(icon), bounds, ui::style::font_face::icons,
+		             ui::style::text_style::single_line_center, color, {});
+	}
+
+	class workspace_action_controller final : public view_controller
+	{
+		std::function<void()> _invoke;
+		std::string _tooltip;
+
+	public:
+		workspace_action_controller(const view_host_ptr& host, const recti bounds, std::function<void()> invoke,
+		                            std::string_view tooltip)
+			: view_controller(host, bounds), _invoke(std::move(invoke)), _tooltip(tooltip)
+		{
+		}
+
+		ui::style::cursor cursor() const override { return ui::style::cursor::link; }
+
+		void draw(ui::draw_context& dc) override
+		{
+			dc.draw_rect(_bounds, ui::color(ui::style::color::view_selected_background, 0.18f));
+		}
+
+		void on_mouse_left_button_up(const pointi loc, const ui::key_state) override
+		{
+			if (_bounds.contains(_start_loc) && _bounds.contains(loc)) _invoke();
+		}
+
+		void popup_from_location(view_hover_element& hover) override
+		{
+			hover.active_bounds = _bounds;
+			hover.elements->add(std::make_shared<text_element>(_tooltip));
+		}
+	};
+}
+
+class folder_tree final : public std::enable_shared_from_this<folder_tree>
+{
+	struct branch
+	{
+		uint64_t request = 0;
+		std::vector<df::folder_path> children;
+		bool loading = true;
+	};
+
+	struct row
+	{
+		df::folder_path path;
+		int depth;
+	};
+
+	view_state& _state;
+	std::vector<df::folder_path> _roots;
+	std::map<df::folder_path, branch> _branches;
+	std::vector<row> _rows;
+	df::folder_path _active_folder;
+	df::folder_path _reveal;
+	view_scroller _scroller;
+	recti _bounds;
+	recti _rows_bounds;
+	int _row_height = 1;
+	int _indent = 1;
+	uint64_t _request_id = 0;
+	uint64_t _navigation_id = 0;
+	bool _show_hidden = false;
+	bool _dirty = true;
+
+	void expand(const df::folder_path path)
+	{
+		auto [found, inserted] = _branches.try_emplace(path);
+		if (!inserted) return;
+
+		const auto request = ++_request_id;
+		found->second.request = request;
+		_dirty = true;
+		_state.invalidate_view(view_invalid::view_layout);
+		auto& async = _state._async;
+		async.queue_async(async_queue::scan_folder, [weak = weak_from_this(), &async, path, request,
+		                                            show_hidden = _show_hidden]
+		{
+			const auto folders = platform::select_folders(df::item_selector(path), show_hidden);
+			std::vector<df::folder_path> children;
+			children.reserve(folders.size());
+			for (const auto& f : folders) children.emplace_back(path.combine(f.name));
+			std::ranges::sort(children, [](const auto a, const auto b)
+			{
+				return str::icmp(a.name(), b.name()) < 0;
+			});
+
+			async.queue_ui([weak, path, request, children = std::move(children)]() mutable
+			{
+				const auto tree = weak.lock();
+				if (!tree) return;
+
+				const auto entry = tree->_branches.find(path);
+				if (entry == tree->_branches.end() || entry->second.request != request) return;
+				entry->second.children = std::move(children);
+				entry->second.loading = false;
+				tree->_dirty = true;
+				tree->_state.invalidate_view(view_invalid::view_layout | view_invalid::controller);
+			});
+		});
+	}
+
+	void toggle(const df::folder_path path)
+	{
+		if (!_branches.contains(path))
+		{
+			expand(path);
+			return;
+		}
+
+		_reveal = {};
+		std::erase_if(_branches, [path](const auto& entry)
+		{
+			return entry.first == path || df::folder_contains(path.text(), entry.first.text());
+		});
+		_dirty = true;
+		_state.invalidate_view(view_invalid::view_layout | view_invalid::controller);
+	}
+
+	void open(const view_host_ptr& host, const df::folder_path path)
+	{
+		const auto request = ++_navigation_id;
+		auto& async = _state._async;
+		async.queue_async(async_queue::scan_folder,
+		                  [weak = weak_from_this(), &async, host = std::weak_ptr<view_host>(host),
+		                   search = _state.search(), request, path]
+		{
+			const auto available = df::item_selector(path).can_iterate();
+			async.queue_ui([weak, host, search, request, path, available]
+			{
+				const auto tree = weak.lock();
+				const auto view = host.lock();
+				if (!tree || !view || tree->_navigation_id != request || tree->_state.search() != search ||
+				    tree->_state.view_mode() != view_type::items) return;
+				tree->_state.open_folder_from_tree(view, path, available);
+			});
+		});
+	}
+
+	void append_rows(const df::folder_path path, const int depth)
+	{
+		_rows.push_back({path, depth});
+		const auto found = _branches.find(path);
+		const auto on_reveal_path = !_reveal.is_empty() && df::folder_contains(path.text(), _reveal.text());
+		if (found == _branches.end())
+		{
+			if (on_reveal_path) expand(path);
+			return;
+		}
+		for (const auto child : found->second.children) append_rows(child, depth + 1);
+	}
+
+	recti row_bounds(const int index) const
+	{
+		const auto top = _bounds.top + index * _row_height - _scroller.scroll_offset().y;
+		return {_rows_bounds.left, top, _rows_bounds.right, top + _row_height};
+	}
+
+	recti expander_bounds(const recti row_bounds, const int depth) const
+	{
+		const auto indent = std::min(depth * _indent, std::max(0, row_bounds.width() - 3 * _indent));
+		const auto left = row_bounds.left + indent;
+		return {left, row_bounds.top, std::min(row_bounds.right, left + _indent), row_bounds.bottom};
+	}
+
+public:
+	explicit folder_tree(view_state& state) : _state(state) {}
+
+	void refresh()
+	{
+		_branches.clear();
+		_reveal = _active_folder;
+		_dirty = true;
+	}
+
+	void layout(ui::measure_context& mc, const recti bounds, const platform::drives& drives, const view_host_ptr& host)
+	{
+		if (_show_hidden != setting.show_hidden)
+		{
+			_show_hidden = setting.show_hidden;
+			refresh();
+		}
+
+		const auto& selectors = _state.search().selectors();
+		const auto active = selectors.size() == 1 ? selectors.front().folder() : df::folder_path{};
+		if (_active_folder != active)
+		{
+			_active_folder = _reveal = active;
+			_dirty = true;
+		}
+
+		std::vector<df::folder_path> roots;
+		for (const auto& drive : drives) roots.emplace_back(drive.name);
+		if (!active.is_empty())
+		{
+			auto root = active;
+			while (root.parent() != root && !root.parent().is_empty()) root = root.parent();
+			if (std::ranges::find(roots, root) == roots.end()) roots.emplace_back(root);
+		}
+		if (_roots != roots)
+		{
+			_roots = std::move(roots);
+			_dirty = true;
+		}
+
+		if (_dirty)
+		{
+			_dirty = false;
+			_rows.clear();
+			for (const auto root : _roots) append_rows(root, 0);
+		}
+
+		_bounds = bounds;
+		_row_height = std::max(1, mc.text_line_height(ui::style::font_face::dialog) + mc.padding1);
+		_indent = std::max(mc.icon_cxy, mc.padding2);
+		_rows_bounds = bounds;
+		const auto height = static_cast<int>(_rows.size()) * _row_height;
+		if (height > bounds.height())
+			_rows_bounds.right = std::max(bounds.left, bounds.right - mc.scroll_width);
+		const recti scrollbar{_rows_bounds.right, bounds.top, bounds.right, bounds.bottom};
+		_scroller.layout({_rows_bounds.width(), height}, _rows_bounds, scrollbar);
+
+		if (!_reveal.is_empty())
+		{
+			const auto found = std::ranges::find(_rows, _reveal, &row::path);
+			if (found != _rows.end())
+			{
+				const auto top = static_cast<int>(found - _rows.begin()) * _row_height;
+				const auto offset = _scroller.scroll_offset().y;
+				if (top < offset || top + _row_height > offset + bounds.height())
+					_scroller.scroll_offset(host, 0, top);
+				_reveal = {};
+			}
+		}
+	}
+
+	void render(ui::draw_context& dc) const
+	{
+		if (_bounds.is_empty()) return;
+		const ui::scoped_clip clip(dc, _bounds);
+		const auto foreground = ui::color(dc.colors.foreground, dc.colors.alpha);
+		dc.draw_rect(_bounds, ui::color(ui::style::color::sidebar_background, dc.colors.alpha));
+		const auto first = _scroller.scroll_offset().y / _row_height;
+		const auto last = std::min(static_cast<int>(_rows.size()), first + _bounds.height() / _row_height + 2);
+		for (auto i = first; i < last; ++i)
+		{
+			const auto& [path, depth] = _rows[i];
+			const auto bounds = row_bounds(i);
+			const auto arrow = expander_bounds(bounds, depth);
+			const auto entry = _branches.find(path);
+			const auto expanded = entry != _branches.end();
+
+			if (path == _active_folder)
+			{
+				dc.draw_rect(bounds, ui::color(ui::style::color::view_selected_background, dc.colors.alpha));
+			}
+			if (!expanded || entry->second.loading || !entry->second.children.empty())
+				draw_workspace_icon(dc, expanded ? icon_index::down : icon_index::right, arrow, foreground);
+
+			auto icon = arrow.offset(_indent, 0);
+			draw_workspace_icon(dc, expanded ? icon_index::open_items : icon_index::folder, icon, foreground);
+			auto text = bounds;
+			text.left = icon.right + dc.padding1;
+			if (text.width() > 0)
+				dc.draw_text(depth == 0 ? path.text() : path.name().sv(), text, ui::style::font_face::dialog,
+				             ui::style::text_style::single_line, foreground, {});
+		}
+		_scroller.draw_scroll(dc);
+	}
+
+	view_controller_ptr controller(const view_host_ptr& host, const pointi loc, hit_test_context& ctx)
+	{
+		if (_scroller.can_scroll() && ctx.occluded(_scroller.scroll_bounds()))
+			return std::make_shared<scroll_controller>(host, _scroller, _scroller.scroll_bounds());
+		if (!items_view::region_hit(_rows_bounds, loc)) return nullptr;
+		const auto index = (loc.y - _bounds.top + _scroller.scroll_offset().y) / _row_height;
+		if (index >= static_cast<int>(_rows.size())) return nullptr;
+
+		const auto [path, depth] = _rows[index];
+		auto bounds = row_bounds(index);
+		const auto arrow = expander_bounds(bounds, depth);
+		const auto expand_branch = ctx.occluded(arrow);
+		if (expand_branch) bounds = arrow;
+		else bounds.left = arrow.right;
+
+		return std::make_shared<workspace_action_controller>(host, bounds,
+			[tree = shared_from_this(), host, path, expand_branch]
+			{
+				if (expand_branch) tree->toggle(path);
+				else tree->open(host, path);
+			}, path.text());
+	}
+
+	void scroll(const view_host_ptr& host, const int delta)
+	{
+		_scroller.offset(host, 0, delta);
+	}
+};
 
 static view_element_ptr find_center_scroll_element(const std::vector<view_element_ptr>& elements,
                                                    const view_scroller& scroller)
@@ -422,6 +727,7 @@ void items_view::refresh()
 items_view::items_view(view_state& s, view_host_ptr host) :
 	_state(s),
 	_host(std::move(host)),
+	_folder_tree(std::make_shared<folder_tree>(s)),
 	_sidebar(std::make_shared<sidebar_host>(s))
 {
 	_items_scroller.popup_func = [this](view_hover_element& hover, const pointi loc)
@@ -445,99 +751,283 @@ items_view::~items_view()
 	ui::animations.erase(this);
 }
 
+namespace
+{
+	using enum workspace_pane;
+	constexpr workspace_order workspace_orders[] = {
+		{folders, contents, preview}, {folders, preview, contents}, {contents, folders, preview},
+		{contents, preview, folders}, {preview, folders, contents}, {preview, contents, folders}
+	};
+}
+
+workspace_geometry arrange_workspace(const sizei extent, const int gap, const int preferred_minimum,
+                                     const settings_t::workspace_layout& layout, const bool folders_visible)
+{
+	workspace_geometry result{};
+	result.order = workspace_orders[std::clamp(layout.order, 0, static_cast<int>(std::size(workspace_orders)) - 1)];
+	result.count = folders_visible ? 3 : 2;
+	// Keep the relative order of the remaining panes when the sidebar is hidden.
+	if (!folders_visible)
+	{
+		const auto sidebar = std::ranges::find(result.order, folders);
+		std::rotate(sidebar, sidebar + 1, result.order.end());
+	}
+
+	const auto divider_width = std::clamp(gap, 0, extent.cx / result.count);
+	const auto width = extent.cx - divider_width * (result.count - 1);
+	const auto minimum = std::min(preferred_minimum, width / result.count);
+	result.available_width = width;
+	result.minimum_width = minimum;
+
+	const auto ratio_width = [width](const int ratio)
+	{
+		return df::mul_div(width, std::clamp(ratio, 0, settings_t::workspace_layout::scale),
+		                   settings_t::workspace_layout::scale);
+	};
+	const auto left = std::clamp(ratio_width(folders_visible ? layout.left : layout.two_pane_left),
+	                             minimum, width - minimum * (result.count - 1));
+	const auto right = folders_visible ? std::clamp(ratio_width(layout.right), minimum, width - left - minimum)
+	                                  : width - left;
+	const int widths[] = {left, folders_visible ? width - left - right : right, right};
+	auto x = 0;
+	for (auto i = 0; i < result.count; ++i)
+	{
+		result.panes[i] = {x, 0, x + widths[i], extent.cy};
+		x += widths[i];
+		if (i + 1 < result.count)
+		{
+			result.dividers[i] = {x, 0, x + divider_width, extent.cy};
+			x += divider_width;
+		}
+	}
+	return result;
+}
+
 bool items_view::sidebar_visible() const
 {
-	return setting.show_sidebar && _sidebar_width > 0 && _display && !_display->is_zoom_mode() && !_display->
-		comparing();
+	return setting.show_sidebar && _display && !_display->is_zoom_mode() && !_display->comparing();
 }
 
-int items_view::content_left() const
+void items_view::resize_workspace(const int divider, const int x)
 {
-	return sidebar_visible() ? _sidebar_width + _sidebar_splitter_width : 0;
-}
+	const auto& before = _workspace.panes[divider];
+	const auto& after = _workspace.panes[divider + 1];
+	const auto min_width = _workspace.minimum_width;
+	const auto width = _workspace.available_width;
+	const auto delta = std::clamp(x - _workspace.dividers[divider].center().x,
+	                              min_width - before.width(), after.width() - min_width);
+	if (delta == 0 || width == 0) return;
 
-recti items_view::sidebar_bounds() const
-{
-	return sidebar_visible()
-		       ? recti{0, 0, _sidebar_width + _sidebar_splitter_width, _client_extent.cy}
-		       : recti{};
-}
+	const auto ratio = [width](const int size)
+	{
+		return df::mul_div(size, settings_t::workspace_layout::scale, width);
+	};
+	if (_workspace.count == 2)
+		setting.workspace.two_pane_left = ratio(before.width() + delta);
+	else if (divider == 0)
+		setting.workspace.left = ratio(before.width() + delta);
+	else
+		setting.workspace.right = ratio(after.width() - delta);
 
-recti items_view::sidebar_splitter_bounds() const
-{
-	return sidebar_visible()
-		       ? recti{
-			       _sidebar_width, 0, _sidebar_width + _sidebar_splitter_width,
-			       _sidebar->can_scroll() ? _client_extent.cy / 2 : _client_extent.cy
-		       }
-		       : recti{};
-}
-
-void items_view::sidebar_width(const int x)
-{
-	const auto min_width = std::max(_scroll_width * 3, df::round(64 * _scale_factor));
-	const auto max_width = std::max(min_width, _client_extent.cx / 3);
-	const auto width = std::clamp(x, min_width, max_width);
-	if (width == _sidebar_width) return;
-	setting.sidebar.width = df::round(width / _scale_factor);
 	_state.invalidate_view(view_invalid::view_layout);
 }
 
-class sidebar_splitter_controller final : public view_controller
+void items_view::move_workspace_pane(const workspace_pane pane, const int slot)
+{
+	const auto source = std::ranges::find(_workspace.order, pane);
+	const auto dest = _workspace.order.begin() + slot;
+	if (source == dest) return;
+
+	auto order = _workspace.order;
+	const auto from = std::ranges::find(order, pane);
+	const auto to = order.begin() + slot;
+	if (from < to) std::rotate(from, from + 1, to + 1);
+	else std::rotate(to, from, from + 1);
+
+	if (_workspace.count == 2)
+	{
+		// Reorder the visible pair while keeping the hidden sidebar's saved slot.
+		const auto stored = workspace_orders[std::clamp(setting.workspace.order, 0, 5)];
+		const auto sidebar = std::ranges::find(stored, folders) - stored.begin();
+		std::rotate(order.begin() + sidebar, order.begin() + 2, order.end());
+	}
+
+	const auto match = std::ranges::find(workspace_orders, order);
+	setting.workspace.order = static_cast<int>(match - std::begin(workspace_orders));
+	_state.invalidate_view(view_invalid::view_layout | view_invalid::options_save);
+}
+
+void items_view::toggle_workspace_collection()
+{
+	_show_collection = !_show_collection;
+	_state.invalidate_view(view_invalid::view_layout | view_invalid::controller);
+}
+
+void items_view::refresh_workspace_folders()
+{
+	_folder_tree->refresh();
+	_state.invalidate_view(view_invalid::view_layout | view_invalid::controller);
+}
+
+recti items_view::workspace_header_action(const int slot) const
+{
+	const auto header = _pane_headers[slot];
+	const auto pane = _workspace.order[slot];
+	if (pane == contents || header.width() < _header_action_width * 2) return {};
+	return {header.right - _header_action_width, header.top, header.right, header.bottom};
+}
+
+void items_view::draw_workspace_chrome(ui::draw_context& dc) const
+{
+	const auto line = ui::color(ui::style::color::view_text, dc.colors.alpha * 0.15f);
+	const auto text = ui::color(ui::style::color::view_text, dc.colors.alpha);
+	const auto header_color = ui::color(ui::style::color::toolbar_background, dc.colors.alpha);
+	const auto highlight = ui::color(ui::style::color::view_selected_background, dc.colors.alpha);
+	for (const auto& divider : _workspace.dividers)
+	{
+		if (!divider.is_empty())
+			dc.draw_rect(divider, line);
+	}
+
+	for (auto i = 0; i < _workspace.count; ++i)
+	{
+		const auto header = _pane_headers[i];
+		if (header.is_empty()) continue;
+		const ui::scoped_clip clip(dc, header);
+		dc.draw_rect(header, i == _drop_slot ? highlight : header_color);
+		dc.draw_rect(recti(header.left, header.bottom - 1, header.right, header.bottom), line);
+		const auto pane = _workspace.order[i];
+		const auto action = workspace_header_action(i);
+		auto label = header;
+		label.left += dc.padding2;
+		label.right = action.is_empty() ? label.right - dc.padding1 : action.left;
+		const auto title = pane == folders ? (_show_collection ? tt.collection_title.sv() : tt.workspace_folders.sv())
+		                                  : pane == contents ? tt.workspace_contents.sv() : tt.command_edit_preview.sv();
+		if (label.width() > 0)
+			dc.draw_text(title, label, ui::style::font_face::dialog, ui::style::text_style::single_line, text, {});
+		if (!action.is_empty())
+		{
+			if (pane == folders)
+				draw_workspace_icon(dc, _show_collection ? icon_index::folder : icon_index::list, action, text);
+			else
+			{
+				const auto command = _state.find_command(commands::slideshow);
+				if (command && command->enable)
+					draw_workspace_icon(dc, command->checked ? icon_index::stop : icon_index::slideshow, action, text);
+			}
+		}
+	}
+}
+
+class workspace_divider_controller final : public view_controller
 {
 	items_view& _view;
-	int _start_width = 0;
-	bool _tracking = false;
+	int _divider;
+	int _offset = 0;
+	std::optional<settings_t::workspace_layout> _start;
 
 public:
-	sidebar_splitter_controller(const view_host_ptr& host, items_view& view, const recti bounds) :
-		view_controller(host, bounds), _view(view)
+	workspace_divider_controller(const view_host_ptr& host, items_view& view, const int divider)
+		: view_controller(host, view._workspace.dividers[divider]), _view(view), _divider(divider)
 	{
-		_view._sidebar_splitter_active++;
 	}
 
-	~sidebar_splitter_controller() override
-	{
-		_view._sidebar_splitter_active--;
-	}
+	ui::style::cursor cursor() const override { return ui::style::cursor::left_right; }
 
 	void draw(ui::draw_context& dc) override
 	{
-		_view.draw_splitter(dc, _view.sidebar_splitter_bounds(), true, _tracking);
+		dc.draw_rect(_view._workspace.dividers[_divider],
+		             ui::color(ui::style::color::view_selected_background, _start ? 1.0f : 0.65f));
 	}
 
-	ui::style::cursor cursor() const override
+	void on_mouse_left_button_down(const pointi loc, const ui::key_state) override
 	{
-		return ui::style::cursor::left_right;
-	}
-
-	void on_mouse_left_button_down(const pointi loc, const ui::key_state keys) override
-	{
-		_tracking = true;
-		_start_width = _view._sidebar_width;
-		_view.sidebar_width(loc.x);
+		_start = setting.workspace;
+		_offset = loc.x - _bounds.center().x;
 	}
 
 	void on_mouse_move(const pointi loc) override
 	{
-		if (_tracking) _view.sidebar_width(loc.x);
+		if (_start) _view.resize_workspace(_divider, loc.x - _offset);
 	}
 
-	void on_mouse_left_button_up(const pointi loc, const ui::key_state keys) override
+	void on_mouse_left_button_up(const pointi loc, const ui::key_state) override
 	{
-		if (_tracking) _view.sidebar_width(loc.x);
-		_tracking = false;
-		// The width is persisted once here rather than on every move, which would write the whole
-		// settings store to the registry for each pointer message.
-		_view._state.invalidate_view(view_invalid::options_save);
+		if (!_start) return;
+		on_mouse_move(loc);
+		_start.reset();
+		_view._state.invalidate_view(view_invalid::options_save | view_invalid::view_redraw);
+	}
+
+	bool escape() override
+	{
+		if (!_start) return false;
+		setting.workspace = *_start;
+		_start.reset();
+		_view._state.invalidate_view(view_invalid::view_layout);
+		return true;
+	}
+};
+
+class workspace_header_controller final : public view_controller
+{
+	items_view& _view;
+	workspace_pane _pane;
+	bool _tracking = false;
+	int _start_x = 0;
+
+public:
+	workspace_header_controller(const view_host_ptr& host, items_view& view, const int slot, const recti bounds)
+		: view_controller(host, bounds), _view(view), _pane(view._workspace.order[slot])
+	{
+	}
+
+	ui::style::cursor cursor() const override
+	{
+		return _tracking ? ui::style::cursor::hand_down : ui::style::cursor::hand_up;
+	}
+
+	void popup_from_location(view_hover_element& hover) override
+	{
+		hover.active_bounds = _bounds;
+		hover.elements->add(std::make_shared<text_element>(tt.workspace_move_pane));
+	}
+
+	void on_mouse_left_button_down(const pointi loc, const ui::key_state) override
+	{
+		_tracking = true;
+		_start_x = loc.x;
+	}
+
+	void on_mouse_move(const pointi loc) override
+	{
+		if (!_tracking) return;
+		auto slot = -1;
+		if (std::abs(loc.x - _start_x) >= 6 && loc.y >= 0 && loc.y <= _view._client_extent.cy)
+		{
+			for (auto i = 0; i < _view._workspace.count; ++i)
+				if (items_view::region_hit(_view._workspace.panes[i], loc)) slot = i;
+		}
+		if (slot == _view._drop_slot) return;
+		_view._drop_slot = slot;
+		_view._state.invalidate_view(view_invalid::view_redraw);
+	}
+
+	void on_mouse_left_button_up(const pointi loc, const ui::key_state) override
+	{
+		if (!_tracking) return;
+		on_mouse_move(loc);
+		const auto slot = _view._drop_slot;
+		escape();
+		if (slot >= 0) _view.move_workspace_pane(_pane, slot);
 	}
 
 	bool escape() override
 	{
 		if (!_tracking) return false;
 		_tracking = false;
-		_view.sidebar_width(_start_width);
-		_view._state.invalidate_view(view_invalid::options_save);
+		_view._drop_slot = -1;
+		_view._state.invalidate_view(view_invalid::view_redraw);
 		return true;
 	}
 };
@@ -912,85 +1402,6 @@ void items_view::items_changed(const bool path_changed)
 	_state.invalidate_view(view_invalid::view_layout);
 }
 
-void items_view::draw_splitter(ui::draw_context& dc, const recti bounds, const bool active,
-                               const bool tracking) const
-{
-	draw_splitter_handle(dc, bounds, _sidebar_splitter_width, active, tracking);
-}
-
-class splitter_controller final : public view_controller
-{
-public:
-	items_view& _view;
-	int _start = 0;
-	pointi _start_loc;
-	bool _tracking = false;
-
-	splitter_controller(const view_host_ptr& host, items_view& view,
-	                    const recti bounds) : view_controller(host, bounds), _view(view)
-	{
-		_view._splitter_active++;
-	}
-
-	~splitter_controller() override
-	{
-		if (_tracking)
-		{
-			escape();
-		}
-
-		_view._splitter_active--;
-	}
-
-	void draw(ui::draw_context& rc) override
-	{
-		_view.draw_splitter(rc, _view.calc_spliter_bounds(), true, _tracking);
-	}
-
-	ui::style::cursor cursor() const override
-	{
-		return ui::style::cursor::left_right;
-	}
-
-	void update_pos(const pointi loc) const
-	{
-		_view.splitter_pos(loc.x, _tracking);
-	}
-
-	void on_mouse_left_button_down(const pointi loc, const ui::key_state keys) override
-	{
-		_tracking = true;
-		_start = _view.splitter_pos();
-		_start_loc = loc;
-		update_pos(loc);
-	}
-
-	void on_mouse_move(const pointi loc) override
-	{
-		if (_tracking)
-		{
-			update_pos(loc);
-		}
-	}
-
-	void on_mouse_left_button_up(const pointi loc, const ui::key_state keys) override
-	{
-		if (_tracking)
-		{
-			_tracking = false;
-			update_pos(loc);
-		}
-	}
-
-	bool escape() override
-	{
-		if (!_tracking) return false;
-		_tracking = false;
-		_view.splitter_pos(_start, false);
-		return true;
-	}
-};
-
 // design.md L5: Escape peels one layer. With a rectangle on the picture it clears it, and with text
 // selected in the panel's document it clears that; without either it falls through to the unwind
 // ladder view_state::escape owns, so there is one order rather than two.
@@ -1025,36 +1436,29 @@ void items_view::update_regions()
 	// the view and every piece of chrome that overlaps it is carved out first, so hit testing can
 	// simply walk them in priority order.
 	_regions = {};
-	_regions.sidebar_splitter = sidebar_splitter_bounds();
-	_regions.sidebar = sidebar_bounds();
+	_workspace = {};
+	_pane_headers = {};
 
-	const auto zoomed = _display && _display->is_zoom_mode();
-	const auto comparing = _display && _display->comparing();
-	const auto left = content_left();
-
-	if (zoomed || comparing)
+	if (_display && (_display->is_zoom_mode() || _display->comparing()))
 	{
-		// The media element owns the whole client while zoomed or comparing. The item grid, the
-		// splitter and both scroll bars are not drawn, so they must not be hit tested either.
 		_regions.media = recti(_client_extent);
 		return;
 	}
 
-	const auto padding = _scroll_width / 3;
-	const auto control_padding = _scroll_width / 2;
-	const auto x_max = _client_extent.cx - _scroll_width * 3;
-	const auto split_x = splitter_pos();
-	constexpr auto top = 0;
-	// The item list and the media pane run to the bottom of the client: the list's controls are in
-	// the frame's status bar below the view, so no height is reserved here.
-	const auto bottom = std::max(top, _client_extent.cy);
-
-	_regions.media = {left, top, std::max(left, split_x - padding), bottom};
-	_regions.items = {std::min(x_max, split_x + padding), top, _client_extent.cx, bottom};
-	_regions.splitter = {
-		split_x - control_padding, top, split_x + control_padding,
-		_media_scroller.can_scroll() ? bottom / 2 : bottom
-	};
+	_workspace = arrange_workspace(_client_extent, _divider_width, _pane_minimum, setting.workspace, sidebar_visible());
+	for (auto i = 0; i < _workspace.count; ++i)
+	{
+		auto body = _workspace.panes[i];
+		const auto top = std::min(body.bottom, _header_height);
+		_pane_headers[i] = {body.left, body.top, body.right, top};
+		body.top = top;
+		switch (_workspace.order[i])
+		{
+		case folders: _regions.sidebar = body; break;
+		case contents: _regions.items = body; break;
+		case preview: _regions.media = body; break;
+		}
+	}
 
 	if (_items_scroller.can_scroll()) _regions.items_scroll = _items_scroller.scroll_bounds();
 	if (_media_scroller.can_scroll()) _regions.media_scroll = _media_scroller.scroll_bounds();
@@ -1121,9 +1525,11 @@ view_controller_ptr items_view::items_controller_from_location(const view_host_p
 // had lost the splitters and both scroll bars entirely.
 items_view::view_region items_view::region_at(const pointi loc) const
 {
-	if (region_hit(_regions.sidebar_splitter, loc)) return view_region::sidebar_splitter;
+	for (const auto& header : _pane_headers)
+		if (region_hit(header, loc)) return view_region::header;
+	for (const auto& divider : _workspace.dividers)
+		if (region_hit(divider, loc)) return view_region::divider;
 	if (region_hit(_regions.sidebar, loc)) return view_region::sidebar;
-	if (region_hit(_regions.splitter, loc)) return view_region::splitter;
 	if (region_hit(_regions.items_scroll, loc)) return view_region::items_scroll;
 	if (region_hit(_regions.media_scroll, loc)) return view_region::media_scroll;
 	if (region_hit(_regions.media, loc)) return view_region::media;
@@ -1135,9 +1541,9 @@ recti items_view::region_bounds(const view_region region) const
 {
 	switch (region)
 	{
-	case view_region::sidebar_splitter: return _regions.sidebar_splitter;
+	case view_region::header:
+	case view_region::divider: break;
 	case view_region::sidebar: return _regions.sidebar;
-	case view_region::splitter: return _regions.splitter;
 	case view_region::items_scroll: return _regions.items_scroll;
 	case view_region::media_scroll: return _regions.media_scroll;
 	case view_region::media: return _regions.media;
@@ -1156,16 +1562,50 @@ view_controller_ptr items_view::controller_from_location(const view_host_ptr& ho
 	// Each controller is confined to the region that produced it: view_host caches the active
 	// controller and only re-tests once the pointer leaves it, so a controller that overhangs its
 	// region - a hovered item's expanded caption does - would make the neighbouring region unclickable.
-	ctx.confine(region_bounds(region));
+	if (region != view_region::header && region != view_region::divider)
+		ctx.confine(region_bounds(region));
 
 	switch (region)
 	{
-	case view_region::sidebar_splitter:
-		return std::make_shared<sidebar_splitter_controller>(host, *this, _regions.sidebar_splitter);
+	case view_region::header:
+		for (auto i = 0; i < _workspace.count; ++i)
+		{
+			if (!region_hit(_pane_headers[i], loc)) continue;
+			ctx.confine(_pane_headers[i]);
+			auto drag = _pane_headers[i];
+			const auto action = workspace_header_action(i);
+			if (!action.is_empty())
+			{
+				if (ctx.occluded(action))
+				{
+					if (_workspace.order[i] == folders)
+						return std::make_shared<workspace_action_controller>(host, action,
+							[this] { toggle_workspace_collection(); },
+							_show_collection ? tt.workspace_folders.sv() : tt.collection_title.sv());
+
+					const auto command = _state.find_command(commands::slideshow);
+					if (command && command->enable)
+						return std::make_shared<workspace_action_controller>(host, action,
+							[host] { host->invoke(commands::slideshow); },
+							_state.selected_items().size() > 1 ? tt.workspace_play_selection.sv()
+							                                  : tt.command_slideshow.sv());
+					return nullptr;
+				}
+				drag.right = action.left;
+			}
+			return std::make_shared<workspace_header_controller>(host, *this, i, drag);
+		}
+		break;
+	case view_region::divider:
+		for (auto i = 0; i + 1 < _workspace.count; ++i)
+		{
+			if (!region_hit(_workspace.dividers[i], loc)) continue;
+			ctx.confine(_workspace.dividers[i]);
+			return std::make_shared<workspace_divider_controller>(host, *this, i);
+		}
+		break;
 	case view_region::sidebar:
-		return _sidebar->controller_from_location(loc, ctx);
-	case view_region::splitter:
-		return std::make_shared<splitter_controller>(host, *this, _regions.splitter);
+		return _show_collection ? _sidebar->controller_from_location(loc, ctx) : _folder_tree->controller(host, loc, ctx);
 	case view_region::items_scroll:
 		return std::make_shared<scroll_controller>(host, _items_scroller, _regions.items_scroll);
 	case view_region::media_scroll:
@@ -1189,7 +1629,7 @@ menu_type items_view::context_menu(const pointi loc)
 	// else is about the items, so it takes the keyboard back for them first.
 	if (region != view_region::media) release_document();
 
-	if (region == view_region::sidebar || region == view_region::sidebar_splitter)
+	if (region == view_region::sidebar)
 	{
 		return menu_type::sidebar;
 	}
@@ -1223,7 +1663,8 @@ bool items_view::mouse_wheel(const pointi loc, const ui::wheel_notch notch)
 	{
 	case view_region::sidebar:
 		if (!notch.is_vertical()) return false;
-		_sidebar->_scroller.offset(_sidebar, 0, -notch.delta);
+		if (_show_collection) _sidebar->_scroller.offset(_sidebar, 0, -notch.delta);
+		else _folder_tree->scroll(_host, -notch.delta);
 		return true;
 
 	case view_region::media:
@@ -1245,8 +1686,8 @@ bool items_view::mouse_wheel(const pointi loc, const ui::wheel_notch notch)
 		_items_scroller.offset(_host, 0, -notch.delta);
 		return true;
 
-	case view_region::splitter:
-	case view_region::sidebar_splitter:
+	case view_region::header:
+	case view_region::divider:
 	case view_region::none:
 		break;
 	}
@@ -1586,10 +2027,6 @@ void items_view::render(ui::draw_context& dc, const view_controller_ptr controll
 		_items_scroller.draw_scroll(dc);
 		_media_scroller.draw_scroll(dc);
 
-		if (_splitter_active == 0)
-		{
-			draw_splitter(dc, _regions.splitter, _splitter_active != 0, false);
-		}
 
 		{
 			const ui::scoped_clip clip(dc, _regions.items);
@@ -1682,9 +2119,10 @@ void items_view::render(ui::draw_context& dc, const view_controller_ptr controll
 
 		if (sidebar_visible())
 		{
-			_sidebar->render_embedded(dc);
-			draw_splitter(dc, _regions.sidebar_splitter, _sidebar_splitter_active != 0, false);
+			if (_show_collection) _sidebar->render_embedded(dc);
+			else _folder_tree->render(dc);
 		}
+		draw_workspace_chrome(dc);
 	}
 
 	// Last, and over everything: the address bar above shares this view's background, so without an
@@ -1885,15 +2323,10 @@ void items_view::layout(ui::measure_context& mc, const sizei extent)
 
 	_client_extent = extent;
 	_scroll_width = mc.scroll_width;
-	_scale_factor = mc.scale_factor;
-	_top_chrome_height = 0;
-	_sidebar_splitter_width = mc.scroll_width;
-	const auto sidebar_min = df::round(64 * mc.scale_factor);
-	const auto sidebar_max = std::max(sidebar_min, extent.cx / 3);
-	const auto sidebar_preferred = setting.sidebar.width > 0
-		                               ? df::round(setting.sidebar.width * mc.scale_factor)
-		                               : sidebar_host::preferred_width(mc);
-	_sidebar_width = std::clamp(sidebar_preferred, sidebar_min, sidebar_max);
+	_header_height = mc.text_line_height(ui::style::font_face::dialog) + 2 * mc.padding1;
+	_header_action_width = _header_height;
+	_divider_width = std::max(3, df::round(5 * mc.scale_factor));
+	_pane_minimum = df::round(120 * mc.scale_factor);
 
 	// Regions must exist before anything else in layout asks for the item or media bounds.
 	update_regions();
@@ -1903,9 +2336,10 @@ void items_view::layout(ui::measure_context& mc, const sizei extent)
 	// visibility would leave all of that running against a frame that does not exist.
 	_sidebar->attach_embedded(_host->frame(), _host->owner());
 
-	if (setting.show_sidebar)
+	if (sidebar_visible())
 	{
-		_sidebar->layout_embedded(mc, sidebar_bounds());
+		if (_show_collection) _sidebar->layout_embedded(mc, _regions.sidebar);
+		else _folder_tree->layout(mc, _regions.sidebar, _sidebar->_drive_info, _host);
 	}
 
 	df::assert_true(ui::is_ui_thread());
@@ -1925,19 +2359,16 @@ void items_view::layout(ui::measure_context& mc, const sizei extent)
 	}
 	else
 	{
+		const auto media_scroll_bounds = recti{
+			std::max(avail_media_bounds.left, avail_media_bounds.right - mc.scroll_width),
+			avail_media_bounds.top, avail_media_bounds.right, avail_media_bounds.bottom
+		};
+		avail_media_bounds.right = media_scroll_bounds.left;
 		const media_column_inputs media_inputs{
 			&_media_priority_elements, &_media_detail_elements, &_media_elements,
 			avail_media_bounds, _media_element
 		};
 		const auto media_height = layout_media_column(media_inputs, mc, positions);
-
-		const auto split_x = splitter_pos();
-		const auto control_padding = mc.scroll_width / 2;
-		const recti media_scroll_bounds{
-			split_x - control_padding, _client_extent.cy / 2, split_x + control_padding,
-			_client_extent.cy
-		};
-
 		_media_scroller.layout({avail_media_bounds.width(), media_height}, avail_media_bounds, media_scroll_bounds);
 		const auto media_anchor_is_current = media_anchor.element &&
 			std::ranges::find(_media_elements, media_anchor.element) != _media_elements.end();
@@ -1952,7 +2383,7 @@ void items_view::layout(ui::measure_context& mc, const sizei extent)
 			const auto show_scroll_items = _items_scroller.can_scroll();
 			const auto scroll_padding = show_scroll_items ? scroll_text_width : mc.padding1;
 			auto avail_item_bounds = calc_items_bounds();
-			avail_item_bounds.right -= scroll_padding;
+			avail_item_bounds.right = std::max(avail_item_bounds.left, avail_item_bounds.right - scroll_padding);
 
 			// locations.md 7.3: the optional rows are budgeted against the height actually
 			// available, so a tall window shows everything and a short one degrades gracefully.
@@ -1962,12 +2393,12 @@ void items_view::layout(ui::measure_context& mc, const sizei extent)
 			item_column.direction = flex_direction::column;
 			item_column.wrap = flex_wrap::no_wrap;
 			item_column.align_items = flex_align::start;
-			item_column.padding = {0, df::round(mc.padding2 / mc.scale_factor)};
+			item_column.padding = {0, df::round(mc.padding1 / mc.scale_factor)};
 			const auto items_height = layout_flex_elements(
 				_item_elements, mc, positions, avail_item_bounds, item_column).cy;
 
 			const auto item_scroll_bounds = recti{
-				_client_extent.cx - scroll_padding, _top_chrome_height, _client_extent.cx, _client_extent.cy
+				avail_item_bounds.right, _regions.items.top, _regions.items.right, _regions.items.bottom
 			};
 			const sizei scroll_extent = {avail_item_bounds.width(), items_height};
 			_items_scroller.layout(scroll_extent, avail_item_bounds, item_scroll_bounds);

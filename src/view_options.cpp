@@ -272,6 +272,7 @@ static void visit_edited_options(const settings_t& from, To& to, Visit&& visit)
 
 	// Sidebar
 	visit(from.show_sidebar, to.show_sidebar);
+	visit(from.workspace, to.workspace);
 	visit(from.sidebar.show_total_items, to.sidebar.show_total_items);
 	visit(from.sidebar.show_history, to.sidebar.show_history);
 	visit(from.sidebar.show_world_map, to.sidebar.show_world_map);
@@ -702,6 +703,7 @@ view_controls_host_ptr options_view::controls(const ui::control_frame_ptr& owner
 	// Sidebar
 	const auto sidebar = make_section(tt.options_sidebar_shown_title);
 	sidebar->add(std::make_shared<ui::check_control>(frame, tt.command_nav_bar, s.show_sidebar));
+	sidebar->add(std::make_shared<link_element>(tt.workspace_reset, [edit] { edit->settings.workspace = {}; }));
 	sidebar->add(std::make_shared<ui::check_control>(frame, tt.customize_show_total, s.sidebar.show_total_items));
 	sidebar->add(std::make_shared<ui::check_control>(frame, tt.customize_show_history, s.sidebar.show_history));
 	sidebar->add(std::make_shared<ui::check_control>(frame, tt.customize_show_world_map, s.sidebar.show_world_map));

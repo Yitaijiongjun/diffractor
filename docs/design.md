@@ -76,7 +76,17 @@ Singular, Comparison, and Selection summary are panel forms selected by the curr
 ## Application Structure
 
 Items is the windowed browser: grouped thumbnails or details, optional media/metadata preview, and
-independent list/preview scrolling. Fullscreen reuses the same logical scope, query, filters,
+independent list/preview scrolling. Its default workspace places the folder tree, contents, and
+preview from left to right. Drag a pane header to move it and drag the dividers to resize adjacent
+panes. Order and widths are saved. Reset pane layout in the sidebar options restores the defaults.
+
+The folder tree expands one level at a time. Clicking a folder opens it in Contents, while the
+chevron expands or collapses its children. The header also switches between the tree and the
+collection sidebar. Contents defaults to No grouping, which lists files together in the chosen sort
+order, with folders in their own section. The grouping menu can restore grouping by file type or any
+other grouping choice.
+
+Fullscreen reuses the same logical scope, query, filters,
 grouping, sorting, focus, selection, and media state. Leaving it restores Items without rebuilding
 the browsing context.
 
@@ -200,10 +210,12 @@ selected, Copy and Cut keep their item targets
 One selected media item previews, two compatible files compare, and other selections summarize.
 Opening media preserves selection. Selection, focus, pin, hover, and errors remain visually distinct.
 
-Play controls the displayed audio/video. Slideshow walks visible photo/video/audio items from the
-focused item, holds photos for the configured delay, plays timed media to completion, and stops when
-no eligible next item exists. Repeat controls sequence ends; normal continuation and Slideshow are
-separate choices. Resume stores playback position in the rebuildable index and never changes media.
+Play controls the displayed audio/video. With multiple items selected, Slideshow plays the selected
+photo, video and audio items in their display order. The Preview pane shows the current item and its
+position in that sequence. The selection stays in place, and stopping or reaching the end restores
+its regular preview. With a single selection or no selection, Slideshow walks visible media from
+the focused item. It holds photos for the configured delay and plays timed media to completion.
+Repeat controls sequence ends. Normal continuation and Slideshow are separate choices. Resume stores playback position in the rebuildable index and never changes media.
 Seeking while paused updates the displayed frame, progress bar, and elapsed time without resuming
 playback or requiring a hover preview.
 

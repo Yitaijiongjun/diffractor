@@ -1035,7 +1035,11 @@ std::shared_ptr<group_title_control> df::build_group_title(view_state& s, const 
 	}
 	else if (key.type == group_key_type::grouped_value)
 	{
-		if (order == group_by::shuffle)
+		if (order == group_by::ungrouped)
+		{
+			add_title_link(tt.group_title_items, {});
+		}
+		else if (order == group_by::shuffle)
 		{
 			add_title_link(tt.group_title_shuffle, {});
 		}
@@ -1284,8 +1288,8 @@ std::shared_ptr<group_title_control> df::build_group_title(view_state& s, const 
 
 
 	result->elements.emplace_back(std::make_shared<toggle_item_display_element>(g));
-	result->padding(8);
-	result->margin(4, 8);
+	result->padding(4);
+	result->margin(4, 4);
 	result->set_style_bit(view_element_style::background, true);
 
 	g->_title = can_cache ? result : nullptr;
@@ -1479,6 +1483,9 @@ void view_state::update_item_groups()
 			{
 				switch (group_order)
 				{
+				case group_by::ungrouped:
+					groups[df::group_key(group_key_type::grouped_value)].emplace_back(i);
+					break;
 				case group_by::size:
 					groups[size_key(i)].emplace_back(i);
 					break;

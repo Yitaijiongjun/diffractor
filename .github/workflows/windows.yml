@@ -10,7 +10,7 @@ name: Windows
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "codex/bridge-workspace" ]
   pull_request:
     branches: [ "master" ]
 
@@ -74,6 +74,21 @@ jobs:
         $code = $LASTEXITCODE
         Get-Content validate-po.log
         if ($code -ne 0) { exit $code }
+
+    - name: Upload Windows x64 build
+      if: github.ref == 'refs/heads/codex/bridge-workspace' && matrix.config == 'Release' && matrix.arch == 'x64'
+      uses: actions/upload-artifact@v4
+      with:
+        name: diffractor-bridge-windows-x64
+        if-no-files-found: error
+        path: |
+          exe/diffractor64.exe
+          exe/dictionaries/
+          exe/languages/
+          exe/location-*.txt
+          exe/diffractor-tools.json
+          LICENSE
+          COPYING.GPLv3
 
   # The Store binary is Release plus the WINSTORE define, and it is what the package ships. It had
   # never been built by CI, and it was broken at HEAD when this workflow was written: a wstring_view

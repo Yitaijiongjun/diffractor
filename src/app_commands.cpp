@@ -2215,6 +2215,7 @@ void app_frame::initialise_commands()
 	add_command_invoke(commands::group_created, [this] { _state.group_order(group_by::date_created, {}); });
 	add_command_invoke(commands::group_original, [this] { _state.group_order(group_by::date_original, {}); });
 	add_command_invoke(commands::group_presence, [this] { _state.group_order(group_by::presence, {}); });
+	add_command_invoke(commands::group_ungrouped, [this] { _state.group_order(group_by::ungrouped, {}); });
 	add_command_invoke(commands::group_file_type, [this] { _state.group_order(group_by::file_type, {}); });
 	add_command_invoke(commands::group_location, [this] { _state.group_order(group_by::location, {}); });
 	add_command_invoke(commands::group_modified, [this] { _state.group_order(group_by::date_modified, {}); });
@@ -2484,6 +2485,7 @@ void app_frame::initialise_commands()
 			find_command(commands::group_original),
 			find_command(commands::group_modified),
 			find_command(commands::group_extension),
+			find_command(commands::group_ungrouped),
 			find_command(commands::group_file_type),
 			find_command(commands::group_location),
 			find_command(commands::group_pixels),

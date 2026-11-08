@@ -1175,6 +1175,8 @@ private:
 	df::item_set _search_items;
 	df::item_set _display_items;
 	df::item_set _selected;
+	df::item_elements _selection_slides;
+	size_t _selection_slide = 0;
 
 	df::item_element_ptr _focus;
 
@@ -1732,6 +1734,7 @@ public:
 		return !_parent_search.parent.is_empty();
 	}
 
+	void open_folder_from_tree(const view_host_base_ptr& view, df::folder_path folder, bool available);
 	void open(const view_host_base_ptr& view, std::string_view text);
 	void open(const view_host_base_ptr& view, df::file_path path);
 	bool resolve_area_search(df::search_t& search) const;
@@ -1862,7 +1865,7 @@ public:
 		_events.invoke(id);
 	}
 
-	void stop_slideshow() const;
+	void stop_slideshow();
 
 	void load_hover_thumb(const df::item_element_ptr& drawable_item, double pos_numerator, double pos_denominator);
 	void clear_hover_codec();

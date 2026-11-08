@@ -342,6 +342,7 @@ struct app_text_t
 	text_t command_label_none = "No Label";
 	text_t command_group_shuffle = "Show items in random order";
 	text_t command_toggle_group_by = "Toggle item grouping";
+	text_t command_group_ungrouped = "No grouping";
 	text_t command_group_file_type = "Group by File type";
 	text_t command_group_size = "Group by Size";
 	text_t command_group_extension = "Group by Extension";
@@ -634,6 +635,11 @@ struct app_text_t
 	text_t group_title_today = "Today";
 	text_t group_title_yesterday = "Yesterday";
 	text_t group_title_items = "Items";
+	text_t workspace_folders = "Folder tree";
+	text_t workspace_contents = "Contents";
+	text_t workspace_reset = "Reset pane layout";
+	text_t workspace_move_pane = "Drag to move this pane";
+	text_t workspace_play_selection = "Play selected media";
 	text_t cancel_was_pressed_after = "Cancel was pressed after {}";
 	text_t rate_title = "Rate selected items";
 	text_t open_in_browser_title = "Open in file browser";

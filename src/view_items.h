@@ -21,6 +21,7 @@
 class display_state_t;
 class sidebar_host;
 class items_view;
+class folder_tree;
 struct metadata_block;
 
 // Shared by the view and every metadata listing it builds. A listing can outlive the rebuild that
@@ -52,6 +53,22 @@ struct media_column_inputs
 // Returns the scrollable content height.
 int layout_media_column(const media_column_inputs& in, ui::measure_context& mc, ui::control_layouts& positions);
 
+
+enum class workspace_pane { folders, contents, preview };
+using workspace_order = std::array<workspace_pane, 3>;
+
+struct workspace_geometry
+{
+	std::array<recti, 3> panes;
+	std::array<recti, 2> dividers;
+	workspace_order order;
+	int count = 0;
+	int minimum_width = 0;
+	int available_width = 0;
+};
+
+workspace_geometry arrange_workspace(sizei extent, int gap, int preferred_minimum,
+                                     const settings_t::workspace_layout& layout, bool folders_visible);
 
 struct item_and_group
 {
@@ -91,13 +108,16 @@ public:
 
 	sizei _client_extent;
 	display_state_ptr _display;
-	int _splitter_active = 0;
-	int _sidebar_splitter_active = 0;
 	int _scroll_width = 20;
-	int _top_chrome_height = 0;
-	int _sidebar_width = 0;
-	int _sidebar_splitter_width = 0;
-	double _scale_factor = 1.0;
+	int _header_height = 0;
+	int _header_action_width = 0;
+	int _divider_width = 0;
+	int _pane_minimum = 0;
+	int _drop_slot = -1;
+	bool _show_collection = false;
+	workspace_geometry _workspace;
+	std::array<recti, 3> _pane_headers;
+	std::shared_ptr<folder_tree> _folder_tree;
 
 	// locations.md 7.3: an optional control row that can shrink to a one-line header when the
 	// control area would otherwise bury the items the user came to see.
@@ -139,9 +159,7 @@ public:
 	// hit tested in the fixed priority order listed here.
 	struct view_regions
 	{
-		recti sidebar_splitter;
 		recti sidebar;
-		recti splitter;
 		recti items_scroll;
 		recti media_scroll;
 		recti media;
@@ -153,9 +171,9 @@ public:
 	enum class view_region
 	{
 		none,
-		sidebar_splitter,
+		header,
+		divider,
 		sidebar,
-		splitter,
 		items_scroll,
 		media_scroll,
 		media,
@@ -168,8 +186,6 @@ public:
 
 	std::shared_ptr<sidebar_host> _sidebar;
 
-	friend class splitter_controller;
-	friend class sidebar_splitter_controller;
 
 	std::vector<item_and_group> _visible_items;
 	// Reused by render so a frame over a large collection performs no allocation.
@@ -222,42 +238,13 @@ public:
 		return region_hit(_regions.items, loc);
 	}
 
-	int splitter_pos() const
-	{
-		const auto left = content_left();
-		// The stored value is a ratio, so a splitter dragged to its right-hand limit on a wide
-		// window reappears past the grid's own floor once the window narrows. Clamped here rather
-		// than in the drag handler, because that clamp is against the width at the time of the
-		// drag: without this the media region overlapped the strip the item grid reserves, and
-		// being hit tested first it painted over the grid and swallowed its clicks.
-		const auto x_max = std::max(left, _client_extent.cx - _scroll_width * 3);
-		return std::clamp(left + df::mul_div(setting.item_splitter_pos, std::max(0, _client_extent.cx - left),
-		                                     settings_t::item_splitter_max), left, x_max);
-	}
-
-	void splitter_pos(const int x, bool tracking) const
-	{
-		if (_state.view_mode() == view_type::items)
-		{
-			const auto left = content_left();
-			const auto width = std::max(0, _client_extent.cx - left);
-			const auto min_size = std::min(_scroll_width * 5, width / 2);
-			const auto s = df::mul_div(std::clamp(x - left, min_size, width - min_size),
-			                           settings_t::item_splitter_max, std::max(1, width));
-
-			if (s != setting.item_splitter_pos)
-			{
-				setting.item_splitter_pos = s;
-				_state.invalidate_view(view_invalid::view_layout);
-			}
-		}
-	}
-
 	bool sidebar_visible() const;
-	int content_left() const;
-	recti sidebar_bounds() const;
-	recti sidebar_splitter_bounds() const;
-	void sidebar_width(int x);
+	void resize_workspace(int divider, int x);
+	void move_workspace_pane(workspace_pane pane, int slot);
+	void toggle_workspace_collection();
+	void refresh_workspace_folders();
+	recti workspace_header_action(int slot) const;
+	void draw_workspace_chrome(ui::draw_context& dc) const;
 
 	void pan_start(const pointi start_loc) override
 	{
@@ -299,8 +286,6 @@ public:
 	{
 		return _regions.media;
 	}
-
-	recti calc_spliter_bounds() const { return _regions.splitter; }
 	void update_regions();
 	recti region_bounds(view_region region) const;
 	view_controller_ptr media_controller_from_location(const view_host_ptr& host, pointi loc, hit_test_context& ctx);
@@ -322,7 +307,6 @@ public:
 	void add_description_elements(std::vector<view_element_ptr>& elements, const df::item_element_ptr& item,
 	                              const prop::item_metadata_const_ptr& md);
 
-	void draw_splitter(ui::draw_context& dc, recti bounds, bool active, bool tracking) const;
 
 	void line_up(bool toggle_selection, bool extend_selection) const;
 	void line_down(bool toggle_selection, bool extend_selection) const;

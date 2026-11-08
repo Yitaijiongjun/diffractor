@@ -4155,6 +4155,33 @@ static void should_offer_a_slideshow_only_when_something_can_play()
 	assert_equal(false, empty.state.can_slideshow(), "an empty scope cannot run a slideshow");
 }
 
+static void should_play_only_selected_media_in_display_order()
+{
+	browsing_fixture f;
+	const auto photo = f.find("Cube.png");
+	const auto video = f.find("Byzantium.avi");
+	assert_equal(true, photo != nullptr && video != nullptr);
+	f.state.group_order(group_by::ungrouped, sort_by::name);
+	f.state.update_item_groups();
+	f.state.select(f.view, photo, false, false, false);
+	f.state.select(f.view, video, true, false, false);
+	f.state.update_selection();
+
+	const auto selected = f.state.selected_items();
+	const auto focus = f.state.focus_item();
+	assert_equal(2_z, selected.size());
+	f.state.toggle_slideshow(f.view);
+	assert_equal(true, f.state.display_state()->is_slideshow());
+	assert_equal(true, f.state.display_state()->_item1 == video, "Byzantium sorts before Cube");
+	assert_equal(true, selected == f.state.selected_items(), "playing preserves selection");
+	assert_equal(true, focus == f.state.focus_item(), "playing preserves focus");
+
+	f.state.stop();
+	assert_equal(false, f.state.display_state()->is_slideshow());
+	assert_equal(true, f.state.display_state()->is_two(), "stopping restores the two-item preview");
+	assert_equal(true, selected == f.state.selected_items());
+}
+
 // design.md: "Next and Previous folder move between siblings of the current folder. At the first or
 // last sibling they do nothing and are unavailable; they never change level."
 static void should_move_between_sibling_folders()
@@ -4660,6 +4687,36 @@ static void should_keep_the_items_controls_in_the_status_bar()
 	{
 		assert_equal(false, declares(entry), "none is repeated at the trailing end");
 	}
+}
+
+static void should_layout_workspace_panes_without_overlap()
+{
+	settings_t::workspace_layout saved;
+	const auto wide = arrange_workspace({1200, 800}, 5, 120, saved, true);
+	assert_equal(true, wide.order == workspace_order{workspace_pane::folders, workspace_pane::contents,
+	                                                workspace_pane::preview});
+	assert_equal(true, wide.panes[1].width() > wide.panes[2].width());
+
+	saved.order = 4; // Preview, Folders, Contents
+	saved.left = 9900;
+	saved.right = 9900;
+	const auto narrow = arrange_workspace({300, 400}, 5, 120, saved, true);
+	assert_equal(true, narrow.order.front() == workspace_pane::preview);
+	assert_equal(300, narrow.panes.back().right);
+	for (auto i = 0; i < narrow.count; ++i)
+	{
+		assert_equal(true, narrow.panes[i].width() >= narrow.minimum_width);
+		if (i > 0)
+		{
+			assert_equal(narrow.panes[i - 1].right, narrow.dividers[i - 1].left);
+			assert_equal(narrow.dividers[i - 1].right, narrow.panes[i].left);
+		}
+	}
+
+	const auto hidden = arrange_workspace({1200, 800}, 5, 120, saved, false);
+	assert_equal(2, hidden.count);
+	assert_equal(true, hidden.order[0] == workspace_pane::preview && hidden.order[1] == workspace_pane::contents);
+	assert_equal(1200, hidden.panes[1].right);
 }
 
 // A file browser's status bar says what is selected: how many, and how big, which is how Open in Items'
@@ -6327,6 +6384,7 @@ void register_app_tests(view_state& state, test_registry& tests)
 	tests.add("Should label grouping and sorting"s, should_label_grouping_and_sorting);
 	// Discussion #251 - the filter toolbar scrolled away
 	tests.add("Should keep the items controls in the status bar"s, should_keep_the_items_controls_in_the_status_bar);
+	tests.add("Should layout workspace panes without overlap"s, should_layout_workspace_panes_without_overlap);
 	tests.add("Should put task commands in the status bar"s, should_put_task_commands_in_the_status_bar);
 	tests.add("Should end the options view with save"s, should_end_the_options_view_with_save);
 	tests.add("Should save only what the options view edits"s, should_save_only_what_the_options_view_edits);
@@ -6383,6 +6441,7 @@ void register_app_tests(view_state& state, test_registry& tests)
 	tests.add("Should keep what a superseded open asked for"s, should_keep_what_a_superseded_open_asked_for);
 	tests.add("Should offer a slideshow only when something can play"s,
 	          should_offer_a_slideshow_only_when_something_can_play);
+	tests.add("Should play only selected media in display order"s, should_play_only_selected_media_in_display_order);
 	tests.add("Should move between sibling folders"s, should_move_between_sibling_folders);
 	tests.add("Should decide what follows an item"s, should_decide_what_follows_an_item);
 

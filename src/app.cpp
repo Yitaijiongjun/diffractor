@@ -1083,7 +1083,7 @@ void app_frame::load_options(const platform::setting_file_ptr& store)
 		_state.recent_tags.read({}, s_recent_tags, store);
 		_state.recent_locations.read({}, s_recent_locations, store);
 
-		auto group_order = static_cast<uint32_t>(group_by::file_type);
+		auto group_order = static_cast<uint32_t>(group_by::ungrouped);
 		auto sort_order = static_cast<uint32_t>(sort_by::name);
 		store->read({}, s_group_order, group_order);
 		store->read({}, s_sort_order, sort_order);
@@ -1270,8 +1270,11 @@ void app_frame::layout(ui::measure_context& mc)
 		const auto top_content_height = std::max({
 			navigate1_extent.cy, navigate2_extent.cy, navigate3_extent.cy, cy_address, toolbar_cy
 		}) + mc.padding2;
-		const auto top_height = df::mul_div(top_content_height, 6, 5);
-		const auto status_height = std::max(toolbar_cy, cy_control) + mc.padding2;
+		const auto top_height = top_content_height;
+		auto status_height = cy_control;
+		for (const auto& slot : bottom_slots) status_height = std::max(status_height, slot.extent.cy);
+		for (const auto& slot : leading_slots) status_height = std::max(status_height, slot.extent.cy);
+		status_height += mc.padding1;
 
 		const auto client_bounds = recti(_extent).inflate(_state.is_full_screen ? 0 : -scale1);
 		const auto body_top = show_bars ? client_bounds.top + top_height : client_bounds.top;
@@ -2456,6 +2459,7 @@ void app_frame::display_changed()
 void app_frame::reload()
 {
 	_view->reload();
+	_view_items->refresh_workspace_folders();
 
 	// Refresh is the user's recovery from anything stale, so it re-reads what is otherwise only
 	// refreshed by an event: volume free space and labels change without notifying us at all, and
@@ -3616,6 +3620,24 @@ void app_frame::final_exit()
 
 ui::app_ptr create_app(const ui::plat_app_ptr& pa)
 {
+	using namespace ui::style::color;
+	view_background = ui::bgr(0xf8f9fb);
+	sidebar_background = ui::bgr(0xf1f3f6);
+	group_background = ui::bgr(0xe9edf3);
+	toolbar_background = ui::bgr(0xe7ebf1);
+	view_text = ui::bgr(0x202936);
+	view_selected_background = ui::bgr(0xaed2ff);
+
+	dialog_background = ui::bgr(0xf1f3f6);
+	dialog_text = view_text;
+	dialog_selected_text = view_text;
+	dialog_selected_background = view_selected_background;
+	button_background = ui::bgr(0xe4e9f0);
+	bubble_background = ui::bgr(0xffffff);
+	menu_background = bubble_background;
+	menu_text = view_text;
+	menu_shortcut_text = ui::bgr(0x48576b);
+
 	return std::make_shared<app_frame>(pa);
 }
 

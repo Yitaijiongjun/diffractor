@@ -700,7 +700,7 @@ public:
 	// Previous prepare_frame timestamp, for the elapsed time alpha fades advance by.
 	int64_t _last_prepare_us = 0;
 	lerp_animate _search_color_lerp;
-	group_by _starting_group_order = group_by::file_type;
+	group_by _starting_group_order = group_by::ungrouped;
 	sort_by _starting_sort_order = sort_by::def;
 	std::vector<file_group_ref> _starting_media_filter;
 

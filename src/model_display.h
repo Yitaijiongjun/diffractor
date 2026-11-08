@@ -162,7 +162,7 @@ public:
 	{
 	}
 
-	void populate(const view_state& state);
+	void populate(const view_state& state, const df::item_element_ptr& slide = {});
 
 	bool is_one() const
 	{

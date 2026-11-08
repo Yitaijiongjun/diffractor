@@ -41,7 +41,8 @@ enum class group_by
 	related,
 	// Appended rather than placed beside date_created: the order is persisted as an integer, so
 	// inserting here would silently change what an existing setting means.
-	date_original
+	date_original,
+	ungrouped
 };
 
 // The three orders whose headers are days. Anything offered for one of them - the date direction,
@@ -70,7 +71,8 @@ enum class sort_by
 // older build's "date created" resolved to, so it is the honest stand-in rather than a placeholder.
 constexpr group_by group_order_older_builds_understand(const group_by order)
 {
-	return order == group_by::date_original ? group_by::date_created : order;
+	if (order == group_by::date_original) return group_by::date_created;
+	return order == group_by::ungrouped ? group_by::file_type : order;
 }
 
 constexpr sort_by sort_order_older_builds_understand(const sort_by order)

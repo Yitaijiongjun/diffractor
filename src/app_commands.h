@@ -68,6 +68,7 @@ enum class commands
 	group_original,
 	group_extension,
 	group_file_type,
+	group_ungrouped,
 	group_folder,
 	group_location,
 	group_modified,
